@@ -12,7 +12,7 @@ args = parser.parse_args()
 
 from PIL import Image
 import numpy as np
-import json
+import h5py
 from scipy import ndimage
 import scipy
 from tqdm import tqdm
@@ -21,8 +21,13 @@ def sph2pix(map, width, height):
 	closed_pixmap = map * np.array([(height)/np.pi, (width) / (2 * np.pi), 1])
 	return closed_pixmap[:-1, :-1, :]
 
-with open(args.map, 'r') as f:
-	map = np.array(json.load(f))
+def differential(map):
+	dx = np.diff(np.concatenate((map, map[:, :1]), axis=1), axis=1)
+	dy = np.diff(np.concatenate((map, map[:1, :]), axis=0), axis=0)
+	return dy, dx
+
+f = h5py.File(args.map, 'r')
+map = np.array(f['map'])
 
 # load images
 ucs = Image.open(args.ucs)
