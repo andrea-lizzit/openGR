@@ -1,4 +1,4 @@
-using DifferentialEquations
+using OrdinaryDiffEq
 using ProgressBars
 using HDF5
 
@@ -21,21 +21,9 @@ end
 
 function f!(du, u, p, t)
 	l, θ, ϕ, pl, pt = u
-	b, B2, fr, fdrdl = p
-	r = fr(l)
-	drdl = fdrdl(l)
-	du[1] = pl
-	du[2] = pt / r^2
-	du[3] = b / (r^2 * sin(θ)^2)
-	du[4] = B2 * drdl / r^3
-	du[5] = b^2 / r^2 * cos(θ) / sin(θ)^3
-end
-
-function dummyf!(du, u, p, t)
-	l, θ, ϕ, pl, pt = u
-	b, B2, fr, fdrdl = p
-	r = fr(l)
-	drdl = fdrdl(l)
+	b, B2, ρ, M, a = p
+	r = dneg_wh(l, ρ, M, a)
+	drdl = dneg_drdl(l, ρ, M, a)
 	du[1] = pl
 	du[2] = pt / r^2
 	du[3] = b / (r^2 * sin(θ)^2)
@@ -74,15 +62,13 @@ bounds = (0., 2π, 0., π)
 # bounds = (π-0.15, π+0.15, π/2 - 0.15, π/2+0.15) # saturn sector zoom
 # bounds = (π-0.15, π+0.15, π/2 - 0.15, π/2+0.15)
 # bounds = (π-0.25, π+0.25, π/2 - 0.25, π/2+0.25)
-fr = l -> dneg_wh(l, ρ, M, a)
-fdrdl = l -> dneg_drdl(l, ρ, M, a)
 for (i, θcs) = enumerate(ProgressBar(LinRange(bounds[3], bounds[4], height))), (j, ϕcs) = enumerate(LinRange(bounds[1], bounds[2], width))
 	nl, np, nt = toglobal(θcs, ϕcs)
 	pl, pθ, pϕ = canonical_momenta(nl, nt, np, r, θc)
 	b, B2 = constants_of_motion(nl, nt, np, r, θc)
 	u0 = [lc, θc, ϕc, pl, pθ]
 	tspan = (0.0, -1000.0)
-	prob = ODEProblem(f!, u0, tspan, (b, B2, fr, fdrdl))
+	prob = ODEProblem(f!, u0, tspan, (b, B2, ρ, M, a))
 	sol = solve(prob, reltol=1e-6)
 	l, θ, ϕ = sol(-1000.0, idxs=1:3)
 	# l, θ, ϕ = 1, θcs, ϕcs # use this for sanity check
