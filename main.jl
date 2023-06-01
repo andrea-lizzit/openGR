@@ -1,5 +1,6 @@
 using OrdinaryDiffEq
 using ProgressBars
+using StaticArrays
 using HDF5
 
 function dneg_wh(l, ρ, M, a)
@@ -19,20 +20,22 @@ function dneg_drdl(l, ρ, M, a)
 	end
 end
 
-function f!(du, u, p, t)
+function f(u, p, t)
 	l, θ, ϕ, pl, pt = u
 	b, B2, ρ, M, a = p
 	r = dneg_wh(l, ρ, M, a)
 	drdl = dneg_drdl(l, ρ, M, a)
-	du[1] = pl
-	du[2] = pt / r^2
-	du[3] = b / (r^2 * sin(θ)^2)
-	du[4] = B2 * drdl / r^3
-	du[5] = b^2 / r^2 * cos(θ) / sin(θ)^3
+	dl = pl
+	dθ = pt / r^2
+	dϕ = b / (r^2 * sin(θ)^2)
+	dpl = B2 * drdl / r^3
+	dpt = b^2 / r^2 * cos(θ) / sin(θ)^3
+	@SVector [dl, dθ, dϕ, dpl, dpt]
 end
 
+
 function canonical_momenta(nl, nt, np, r, θ)
-	# return pl. pθ. pϕ
+	# return pl, pθ, pϕ
 	return nl, r*nt, r*sin(θ)*np
 end
 
@@ -46,43 +49,76 @@ function toglobal(θ, ϕ)
 	return -sin(θ)*cos(ϕ), -sin(θ)*sin(ϕ), cos(θ)
 end
 
+struct Bounds
+	minϕ::Real
+	maxϕ::Real
+	minθ::Real
+	maxθ::Real
+end
+
+struct WormholeParams
+	ρ::Real
+	M::Real
+	a::Real
+end
+
 ρ = 1.
 a = 0.005ρ
 W = 0.10ρ
 M = W / 1.42953
+whparams = WormholeParams(ρ, M, a)
+
 lc = 4.05ρ + a
 θc = π/2
 ϕc = 0.0;
 r = dneg_wh(lc, ρ, M, a)
 
-width, height = 600, 400; #3841, 2161; #9001, 6001;#1200, 900;
-image = zeros(height, width, 3);
-bounds = (0., 2π, 0., π)
+width, height = 500, 400; #3841, 2161; #9001, 6001;#1200, 900;
+
+
+function initialize_problem(θcs, ϕcs, whparams)
+	nl, np, nt = toglobal(θcs, ϕcs)
+	pl, pθ, pϕ = canonical_momenta(nl, nt, np, r, θc);
+	b, B2 = constants_of_motion(nl, nt, np, r, θc);
+	u0 = @SVector [lc, θc, ϕc, pl, pθ];
+	p = @SVector [b, B2, whparams.ρ, whparams.M, whparams.a];
+	u0, p
+end
+
+function prob_func_closure(width, height, bounds, whparams)
+	function prob_func_inner(prob, i, repeat)
+		# problem function
+		# Returns a new problem with parameters initialized from index i
+		j = i % width;
+		i = i ÷ width;
+		θcs = bounds.minθ + (bounds.maxθ - bounds.minθ) * i / (height-1);
+		ϕcs = bounds.minϕ + (bounds.maxϕ - bounds.minϕ) * j / (width-1);
+		u0, p = initialize_problem(θcs, ϕcs, whparams)
+		remake(prob, u0=u0, p=p)
+	end
+	return prob_func_inner
+end
+
+pbar = ProgressBar(total=width*height)
+
+function output_func(sol, i)
+	update(pbar);
+	s = (sign(sol[end][1]) + 1) / 2
+	[sol[end][2], sol[end][3], s], false
+end
+
+bounds = Bounds(0., 2π, 0., π)
+p_func = prob_func_closure(width, height, bounds, whparams)
+u0, p = initialize_problem(bounds.minθ, bounds.minϕ, whparams)
+prob = ODEProblem(f, u0, (0.0, -1000.0), p)
+eprob = EnsembleProblem(prob; output_func=output_func, prob_func=p_func)
+sim = solve(eprob, Tsit5(), EnsembleThreads(), trajectories=width*height, save_everystep=false)
 # bounds = (π-0.075 - 0.075/2, π-0.075, π/2 - 0.075/2, π/2) # saturn sector with artifact
 # bounds = (π-0.15, π+0.15, π/2 - 0.15, π/2+0.15) # saturn sector zoom
 # bounds = (π-0.15, π+0.15, π/2 - 0.15, π/2+0.15)
 # bounds = (π-0.25, π+0.25, π/2 - 0.25, π/2+0.25)
-for (i, θcs) = enumerate(ProgressBar(LinRange(bounds[3], bounds[4], height))), (j, ϕcs) = enumerate(LinRange(bounds[1], bounds[2], width))
-	nl, np, nt = toglobal(θcs, ϕcs)
-	pl, pθ, pϕ = canonical_momenta(nl, nt, np, r, θc)
-	b, B2 = constants_of_motion(nl, nt, np, r, θc)
-	u0 = [lc, θc, ϕc, pl, pθ]
-	tspan = (0.0, -1000.0)
-	prob = ODEProblem(f!, u0, tspan, (b, B2, ρ, M, a))
-	sol = solve(prob, reltol=1e-6)
-	l, θ, ϕ = sol(-1000.0, idxs=1:3)
-	# l, θ, ϕ = 1, θcs, ϕcs # use this for sanity check
-	s = (sign(l) + 1) / 2
-	image[i, j, :] = [θ, ϕ, s]; # [mod(θ, π), mod(ϕ, 2π), s]
-end
 
+
+image = reshape(hcat(sim...), (3, width, height))
 # write image to disk in HDF5
-h5write("map.h5", "map", permutedims(image, [3, 2, 1]))
-
-
-# using Plots;
-# heatmap(image)
-# make a histogram of image[:, :, 1]
-# thetas = reshape(image[:, :, 1], :)
-# phis = reshape(image[:, :, 2], :)
-# histogram(phis, bins=100)
+h5write("map.h5", "map", image)
